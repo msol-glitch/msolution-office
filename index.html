@@ -240,7 +240,7 @@ function download(name, text, type) { const a = h('a', { href: URL.createObjectU
 let S = null;
 try { S = JSON.parse(sessionStorage.getItem('mso_s') || 'null'); } catch { S = null; }
 function setSession(j) {
-  S = { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (j.expires_in || 3600) * 1000, email: j.user && j.user.email };
+  S = { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (j.expires_in || 3600) * 1000, email: j.user && j.user.email, name: j.user && j.user.user_metadata && j.user.user_metadata.name };
   sessionStorage.setItem('mso_s', JSON.stringify(S)); // 탭을 닫으면 사라짐 (localStorage 미사용)
 }
 function errMsg(j, fallback) {
@@ -257,7 +257,7 @@ async function authCall(path, body) {
   if (!r.ok) throw new Error(errMsg(j, '인증 실패'));
   return j;
 }
-async function login(email, pw) { setSession(await authCall('token?grant_type=password', { email, password: pw })); }
+async function login(email, pw) { if (email && !email.includes('@')) email = email.trim() + '@msolution.local'; setSession(await authCall('token?grant_type=password', { email, password: pw })); }
 let refreshing = null;
 async function token() {
   if (!S) throw new Error('로그인이 필요합니다');
@@ -309,7 +309,7 @@ function chip(t, opts = {}) { return h('span', { class: `chip ${t.kind}${opts.se
 // ================= 로그인 =================
 function renderLogin() {
   const app = $('#app'); put(app);
-  const em = h('input', { type: 'email', placeholder: '이메일', autocomplete: 'username' });
+  const em = h('input', { type: 'text', placeholder: '아이디 (사번)', autocomplete: 'username' });
   const pw = h('input', { type: 'password', placeholder: '비밀번호', autocomplete: 'current-password' });
   const btn = h('button', { class: 'pri' }, '로그인');
   const go = async () => {
@@ -322,9 +322,33 @@ function renderLogin() {
     h('div', { class: 'muted', style: 'margin-top:12px' }, '공용 PC에서는 사용 후 반드시 로그아웃하세요. ', CFG.idleMinutes + '분 동안 조작이 없으면 자동 로그아웃됩니다.')));
 }
 
+async function renderForcePw() {
+  const app = $('#app'); put(app);
+  const np = h('input', { type: 'password', placeholder: '새 비밀번호 (8자 이상)', autocomplete: 'new-password' });
+  const cp = h('input', { type: 'password', placeholder: '새 비밀번호 확인', autocomplete: 'new-password' });
+  const msg = h('div', { class: 'muted', style: 'margin-top:8px;min-height:16px' });
+  const btn = h('button', { class: 'pri' }, '변경하고 시작');
+  const submit = async () => {
+    const a = np.value, b = cp.value;
+    if (a.length < 8) { msg.textContent = '비밀번호는 8자 이상이어야 합니다.'; msg.style.color = 'var(--red)'; return; }
+    if (a !== b) { msg.textContent = '두 비밀번호가 일치하지 않습니다.'; msg.style.color = 'var(--red)'; return; }
+    btn.disabled = true;
+    try {
+      await authApi('PUT', 'user', { password: a, data: { name: S && S.name, must_change: false } });
+      toast('비밀번호가 변경되었습니다.');
+      await afterLogin();
+    } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; btn.disabled = false; }
+  };
+  btn.onclick = submit; cp.onkeydown = e => { if (e.key === 'Enter') submit(); };
+  app.append(h('div', { class: 'login' }, h('h1', null, '비밀번호 변경'),
+    h('div', { class: 'muted', style: 'margin-bottom:10px' }, '첫 로그인입니다. 계속하려면 새 비밀번호를 설정하세요.'),
+    np, cp, btn, msg,
+    h('div', { style: 'margin-top:12px' }, h('button', { class: 'ghost', onclick: () => logout() }, '로그아웃'))));
+}
 async function afterLogin() {
   const st = await rpc('office_security_status');
   if (!['admin', 'production'].includes(st.role)) { toast('생산관리 권한이 없는 계정입니다. 관리자에게 요청하세요.', true); return logout(); }
+  if (st.must_change) return renderForcePw();
   if (st.has_mfa && st.aal !== 'aal2') return renderMfaLogin();
   if (!st.has_mfa && st.mfa_required) return renderMfaEnroll(true);
   return start();
